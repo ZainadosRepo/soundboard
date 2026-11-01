@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Soundboard</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" type="module"></script>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <header class="sidebar-head">
+          <span>Sets</span>
+          <button id="add-set" class="icon-btn" type="button" title="Nouveau set (Ctrl + Maj + N)" aria-label="Nouveau set">+</button>
+          <button id="app-menu" class="icon-btn" type="button" title="Plus d’actions" aria-label="Plus d’actions">⋯</button>
+        </header>
+        <ul id="sets" class="sets" role="listbox" aria-label="Sets"></ul>
+      </aside>
+
+      <main class="main">
+        <header class="toolbar">
+          <h1 id="set-title" class="set-title"></h1>
+          <div class="segmented" role="group" aria-label="Affichage">
+            <button id="mode-grid" type="button" title="Grille">▦</button>
+            <button id="mode-list" type="button" title="Liste">☰</button>
+          </div>
+          <button id="set-options" class="tool" type="button" title="Ce qui se passe à la fin d’un son, en mode liste">Options</button>
+          <button id="add-sounds" class="tool" type="button" title="Ajouter des sons au set">+ Sons</button>
+          <div class="master" role="group" aria-label="Volume général">
+            <div class="segmented" title="Préréglage du volume général (Ctrl + Maj + D pour basculer)">
+              <button id="master-a" type="button">A</button>
+              <button id="master-b" type="button">B</button>
+            </div>
+            <input id="master-volume" type="range" min="0" max="1" step="0.01" aria-label="Volume général" title="Volume général (Ctrl + ↑ / Ctrl + ↓)" />
+            <output id="master-value"></output>
+            <button id="master-mute" class="icon-btn" type="button" title="Tout couper" aria-label="Tout couper">🔊</button>
+          </div>
+          <button id="fade-all" class="icon-btn" type="button" title="Fondu de sortie général (-)" aria-label="Fondu de sortie général">◢</button>
+          <button id="pause-all" class="icon-btn" type="button" title="Met en pause tout ce qui joue, ou reprend ce qui est en pause (Espace)" aria-label="Tout mettre en pause">⏸</button>
+          <button id="stop-all" class="icon-btn" type="button" title="Tout arrêter (Échap)" aria-label="Tout arrêter">⏹</button>
+          <button id="toggle-inspector" class="icon-btn" type="button" title="Inspecteur (Ctrl + I)" aria-label="Inspecteur">ⓘ</button>
+        </header>
+        <section id="board" class="board" aria-live="polite"></section>
+        <div id="drop-hint" class="drop-hint" hidden></div>
+      </main>
+
+      <aside id="inspector" class="inspector" hidden></aside>
+    </div>
+
+    <div id="editor" class="editor" hidden></div>
+
+    <dialog id="dialog" class="dialog"></dialog>
+    <div id="menu" class="menu" role="menu" hidden></div>
+    <div id="popover" class="popover" hidden></div>
+  </body>
+</html>

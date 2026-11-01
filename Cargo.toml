@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/soundboard-core", "src-tauri"]
+
+# Profiles are only honoured at the workspace root.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+# Decoding and resampling in debug builds is slow enough to delay every first play.
+[profile.dev.package."*"]
+opt-level = 2

@@ -1,0 +1,43 @@
+name: Release
+
+# Builds the Windows installer (.exe) and the macOS disk image (.dmg) into a draft release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: --bundles nsis
+            targets: ""
+          - os: macos-latest
+            args: --target universal-apple-darwin --bundles dmg
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - run: npm install -g @tauri-apps/cli@2
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: tauri
+          args: ${{ matrix.args }}
+          tagName: v__VERSION__
+          releaseName: Soundboard v__VERSION__
+          releaseDraft: true
