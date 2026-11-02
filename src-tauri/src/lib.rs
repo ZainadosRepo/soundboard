@@ -10,7 +10,7 @@ use audio::{Engine, EngineEvent};
 use board::{Board, Effect};
 use midi_io::Midi;
 use osc_service::OscService;
-use prefs::{OscPrefs, Prefs};
+use prefs::{OscPrefs, Prefs, PreviewPrefs};
 use serde::Serialize;
 use soundboard_core::gain::MasterVolume;
 use soundboard_core::hotkey::is_valid_global_shortcut;
@@ -383,6 +383,11 @@ fn compute_waveform(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Settings {
+    outputs: Vec<String>,
+    output_device: Option<String>,
+    output_status: String,
+    preview: PreviewPrefs,
+    preview_status: String,
     osc: OscPrefs,
     osc_status: String,
     midi_outputs: Vec<String>,
@@ -395,7 +400,13 @@ struct Settings {
 #[tauri::command]
 fn settings(app: Cmd) -> Settings {
     let board = app.board.lock().expect("board");
+    let (output_status, preview_status) = board.output_status();
     Settings {
+        outputs: audio::output_names(),
+        output_device: board.prefs.output_device.clone(),
+        output_status,
+        preview: board.prefs.preview.clone(),
+        preview_status,
         osc: board.prefs.osc.clone(),
         osc_status: app.osc.status(),
         midi_outputs: Midi::output_names(),
@@ -404,6 +415,21 @@ fn settings(app: Cmd) -> Settings {
         midi_sources: board.midi_sources,
         global_shortcut: board.prefs.global_shortcut.clone(),
     }
+}
+
+#[tauri::command]
+fn set_output(app: Cmd, device: Option<String>) {
+    app.with(|b| b.set_output(device));
+}
+
+#[tauri::command]
+fn set_preview(app: Cmd, preview: PreviewPrefs) {
+    app.with(|b| b.set_preview(preview));
+}
+
+#[tauri::command]
+fn cue(app: Cmd, id: Uuid) {
+    app.with(|b| b.cue(id));
 }
 
 #[tauri::command]
@@ -495,10 +521,12 @@ pub fn run() {
             };
             let prefs_path = handle.path().app_config_dir()?.join("settings.json");
             let (prefs, warning) = Prefs::load(prefs_path);
-            let (engine, events) = Engine::start();
+            let (engine, events) = Engine::start(prefs.output(), true);
+            // No fallback: a missing headphone output must not send pre-listening live.
+            let (cue, cue_events) = Engine::start(prefs.preview.output(), false);
             let shortcut = prefs.global_shortcut.clone();
             let midi_output = prefs.midi_output.clone();
-            let mut board = Board::new(store, prefs, engine);
+            let mut board = Board::new(store, prefs, engine, cue);
             if let Some(w) = warning {
                 board.fail(w);
             }
@@ -519,6 +547,18 @@ pub fn run() {
                             EngineEvent::Finished(id) => b.voice_finished(id),
                             EngineEvent::Advance(id, lead) => b.advance(id, lead),
                             EngineEvent::StartFailed(id, e) => b.start_failed(id, e),
+                        });
+                    }
+                })?;
+            let cue_app = app.clone();
+            thread::Builder::new()
+                .name("preview-events".into())
+                .spawn(move || {
+                    for event in cue_events {
+                        cue_app.with(|b| match event {
+                            EngineEvent::Finished(id) => b.voice_finished(id),
+                            EngineEvent::StartFailed(id, e) => b.start_failed(id, e),
+                            EngineEvent::Advance(..) => {}
                         });
                     }
                 })?;
@@ -622,11 +662,14 @@ pub fn run() {
             master_action,
             preview,
             stop_preview,
+            cue,
             scan,
             jump,
             playhead,
             waveform,
             settings,
+            set_output,
+            set_preview,
             set_osc,
             set_midi_output,
             set_global_shortcut,

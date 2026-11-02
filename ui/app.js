@@ -416,6 +416,7 @@ function tileMenu(tile, x, y) {
   showMenu(x, y, [
     { label: "Modifier…", action: () => openInspector() },
     { label: "Ouvrir l’éditeur de forme d’onde", shortcut: `${MOD} + Maj + E`, action: () => openEditor(tile.id) },
+    ...(state.preListening ? [{ label: state.previewing ? "Arrêter la pré-écoute" : "Pré-écouter", action: () => call("cue", { id: tile.id }) }] : []),
     "sep",
     toggle("Boucle", (t) => t.player.loops, (t, v) => (t.player.loops = v)),
     toggle("Favori", (t) => t.isFavorite, (t, v) => (t.isFavorite = v)),
@@ -1110,7 +1111,7 @@ async function openSettings(tab = "general") {
   const body = el("div");
   const tabs = el("div", "tabs");
   const panes = {};
-  for (const [id, label] of [["general", "Général"], ["midi", "MIDI"], ["osc", "OSC"]]) {
+  for (const [id, label] of [["general", "Général"], ["audio", "Audio"], ["midi", "MIDI"], ["osc", "OSC"]]) {
     const b = button(label, "btn", () => show(id));
     b.dataset.tab = id;
     tabs.append(b);
@@ -1179,6 +1180,83 @@ async function openSettings(tab = "general") {
     el("strong", null, "Liens soundboard://"),
     links,
     el("p", "help", "À lancer depuis un Stream Deck, un script ou un raccourci. Les noms ignorent majuscules et accents. Toutes les adresses OSC marchent aussi comme liens."),
+  );
+
+  // Audio: live output and pre-listening output.
+  const a = panes.audio;
+  const outputSelect = (saved) => {
+    const select = el("select");
+    for (const [value, label] of [["", "Sortie du système"], ...settings.outputs.map((n) => [n, n])]) {
+      const o = el("option", null, label);
+      o.value = value;
+      select.append(o);
+    }
+    if (saved && !settings.outputs.includes(saved)) {
+      const o = el("option", null, `${saved} (débranchée)`);
+      o.value = saved;
+      select.append(o);
+    }
+    select.value = saved ?? "";
+    return select;
+  };
+  const outputStatus = el("p", "help", settings.outputStatus);
+  const previewStatus = el("p", "help", settings.previewStatus);
+  // The output thread reopens on its own; read back what it opened once it had the time.
+  const refreshStatus = () =>
+    setTimeout(async () => {
+      const fresh = await call("settings");
+      if (!fresh) return;
+      outputStatus.textContent = fresh.outputStatus;
+      previewStatus.textContent = fresh.previewStatus;
+    }, 1500);
+  const output = outputSelect(settings.outputDevice);
+  output.addEventListener("change", async () => {
+    await call("set_output", { device: output.value || null });
+    refreshStatus();
+  });
+  const preview = structuredClone(settings.preview);
+  const previewOn = el("input");
+  previewOn.type = "checkbox";
+  previewOn.checked = preview.enabled;
+  const previewDevice = outputSelect(preview.device);
+  const previewVolume = el("input");
+  previewVolume.type = "range";
+  previewVolume.min = 0;
+  previewVolume.max = 100;
+  previewVolume.value = Math.round(preview.volume * 100);
+  const previewVolumeOut = el("output", null, `${previewVolume.value} %`);
+  const applyPreview = async () => {
+    preview.enabled = previewOn.checked;
+    preview.device = previewDevice.value || null;
+    preview.volume = Number(previewVolume.value) / 100;
+    previewDevice.disabled = previewVolume.disabled = !preview.enabled;
+    await call("set_preview", { preview });
+    refreshStatus();
+  };
+  previewDevice.disabled = previewVolume.disabled = !preview.enabled;
+  previewOn.addEventListener("change", applyPreview);
+  previewDevice.addEventListener("change", applyPreview);
+  previewVolume.addEventListener("change", applyPreview);
+  previewVolume.addEventListener("input", () => (previewVolumeOut.textContent = `${previewVolume.value} %`));
+  const outputRow = el("label", "field");
+  outputRow.append(el("span", null, "Sortie"), output);
+  const previewOnRow = el("label", "check");
+  previewOnRow.append(previewOn, el("span", null, "Activer la pré-écoute"));
+  const previewDeviceRow = el("label", "field");
+  previewDeviceRow.append(el("span", null, "Sortie"), previewDevice);
+  const previewVolumeRow = el("label", "field");
+  previewVolumeRow.append(el("span", null, "Volume"), previewVolume, previewVolumeOut);
+  a.append(
+    el("strong", null, "Lecture des tuiles"),
+    outputRow,
+    outputStatus,
+    el("p", "help", "Pour envoyer les sons dans OBS ou Discord sans changer la sortie de tout l’ordinateur, choisir un câble audio virtuel (VB-Cable, Voicemeeter, BlackHole). Changer de sortie arrête les sons en cours. Si la sortie choisie est débranchée, les sons passent par la sortie du système."),
+    el("strong", null, "Pré-écoute"),
+    previewOnRow,
+    previewDeviceRow,
+    previewVolumeRow,
+    previewStatus,
+    el("p", "help", "Écouter un son sur une autre sortie, le casque par exemple, sans qu’il parte en direct : clic droit sur une tuile › Pré-écouter, ou ▶ Écouter dans l’éditeur. Si cette sortie est débranchée, la pré-écoute se tait au lieu de passer ailleurs."),
   );
 
   // MIDI: pad lights.

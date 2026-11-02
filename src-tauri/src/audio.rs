@@ -216,6 +216,29 @@ impl Mixer {
     }
 }
 
+/// Where an engine plays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Output {
+    /// Nowhere: the pre-listening engine while pre-listening is off.
+    Off,
+    /// The system's default output.
+    System,
+    /// A device by name (a virtual cable for the stream, headphones…).
+    Named(String),
+}
+
+/// Names of the audio outputs, for the settings.
+pub fn output_names() -> Vec<String> {
+    cpal::default_host()
+        .output_devices()
+        .map(|devices| devices.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// What the output thread is told: `true` when the output was changed on purpose, `false`
+/// when the device went away.
+type Reopen = Sender<bool>;
+
 pub struct Engine {
     mixer: Arc<Mutex<Mixer>>,
     cache: Arc<Mutex<BufferCache>>,
@@ -223,12 +246,19 @@ pub struct Engine {
     pending: Arc<Mutex<HashMap<Uuid, u64>>>,
     tokens: AtomicU64,
     rate: Arc<AtomicU32>,
+    output: Arc<Mutex<Output>>,
+    /// Wakes the output thread so it reopens on `output`.
+    reopen: Arc<Mutex<Option<Reopen>>>,
+    /// The device actually playing, or why none is, in French for the settings.
+    status: Arc<Mutex<String>>,
 }
 
 impl Engine {
-    /// Opens the default output on a thread that owns the stream and reopens it when the
-    /// device goes away (headphones unplugged…). Events arrive on the returned receiver.
-    pub fn start() -> (Engine, Receiver<EngineEvent>) {
+    /// Opens `output` on a thread that owns the stream and reopens it when the device goes
+    /// away (headphones unplugged…). With `fallback`, a named output that is missing gives way
+    /// to the system's; without it, nothing plays until the device is back. Events arrive on
+    /// the returned receiver.
+    pub fn start(output: Output, fallback: bool) -> (Engine, Receiver<EngineEvent>) {
         let (events, receiver) = mpsc::channel();
         let rate = Arc::new(AtomicU32::new(48_000));
         let mixer = Arc::new(Mutex::new(Mixer {
@@ -243,13 +273,42 @@ impl Engine {
             pending: Arc::default(),
             tokens: AtomicU64::new(0),
             rate: rate.clone(),
+            output: Arc::new(Mutex::new(output)),
+            reopen: Arc::default(),
+            status: Arc::new(Mutex::new("Ouverture de la sortie…".into())),
         };
-        let cache = engine.cache.clone();
+        let thread = OutputThread {
+            mixer,
+            cache: engine.cache.clone(),
+            rate,
+            output: engine.output.clone(),
+            reopen: engine.reopen.clone(),
+            status: engine.status.clone(),
+            fallback,
+        };
         thread::Builder::new()
             .name("audio-output".into())
-            .spawn(move || output_thread(mixer, cache, rate))
+            .spawn(move || thread.run())
             .expect("audio thread starts");
         (engine, receiver)
+    }
+
+    /// Moves playback to `output`. What was sounding stops: its decoded rate may not match.
+    pub fn set_output(&self, output: Output) {
+        {
+            let mut current = self.output.lock().expect("output");
+            if *current == output {
+                return;
+            }
+            *current = output;
+        }
+        if let Some(reopen) = self.reopen.lock().expect("reopen").as_ref() {
+            let _ = reopen.send(true);
+        }
+    }
+
+    pub fn status(&self) -> String {
+        self.status.lock().expect("status").clone()
     }
 
     pub fn start_voice(&self, id: Uuid, request: StartRequest) {
@@ -402,41 +461,112 @@ fn insert(mixer: &Mutex<Mixer>, id: Uuid, request: &StartRequest, buffer: Arc<Ve
     mixer.voices.insert(id, voice);
 }
 
-fn output_thread(mixer: Arc<Mutex<Mixer>>, cache: Arc<Mutex<BufferCache>>, rate: Arc<AtomicU32>) {
-    loop {
-        let (lost, lost_signal) = mpsc::channel::<()>();
-        match open_output(&mixer, lost) {
-            Ok((stream, device_rate)) => {
-                if rate.swap(device_rate, Ordering::Relaxed) != device_rate {
-                    // Cached regions were resampled for the old rate.
-                    *cache.lock().expect("cache") = BufferCache::default();
+struct OutputThread {
+    mixer: Arc<Mutex<Mixer>>,
+    cache: Arc<Mutex<BufferCache>>,
+    rate: Arc<AtomicU32>,
+    output: Arc<Mutex<Output>>,
+    reopen: Arc<Mutex<Option<Reopen>>>,
+    status: Arc<Mutex<String>>,
+    fallback: bool,
+}
+
+impl OutputThread {
+    fn run(self) {
+        loop {
+            let (reopen, signal) = mpsc::channel();
+            // Published before reading the output, so a change in between still wakes us.
+            *self.reopen.lock().expect("reopen") = Some(reopen.clone());
+            let output = self.output.lock().expect("output").clone();
+            if output == Output::Off {
+                self.set_status("Désactivée");
+                let _ = signal.recv();
+                continue;
+            }
+            let on_purpose = match self.open(&output, reopen) {
+                Ok((stream, device_rate)) => {
+                    if self.rate.swap(device_rate, Ordering::Relaxed) != device_rate {
+                        // Cached regions were resampled for the old rate.
+                        *self.cache.lock().expect("cache") = BufferCache::default();
+                    }
+                    let on_purpose = signal.recv().unwrap_or(false);
+                    drop(stream);
+                    // The device is gone with what it was playing: report those sounds as ended.
+                    let mut mixer = self.mixer.lock().expect("mixer");
+                    for id in mixer.voices.drain().map(|(id, _)| id).collect::<Vec<_>>() {
+                        let _ = mixer.events.send(EngineEvent::Finished(id));
+                    }
+                    on_purpose
                 }
-                let _ = lost_signal.recv();
-                drop(stream);
-                // The device is gone with what it was playing: report those sounds as ended.
-                let mut mixer = mixer.lock().expect("mixer");
-                for id in mixer.voices.drain().map(|(id, _)| id).collect::<Vec<_>>() {
-                    let _ = mixer.events.send(EngineEvent::Finished(id));
+                Err(e) => {
+                    eprintln!("audio output unavailable: {e}");
+                    self.set_status(&e);
+                    signal.recv_timeout(Duration::from_secs(1)).unwrap_or(false)
+                }
+            };
+            if !on_purpose {
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+
+    fn set_status(&self, status: &str) {
+        *self.status.lock().expect("status") = status.into();
+    }
+
+    // shortcut: after falling back to the system's output, the named device is picked up again
+    // only when that output is lost or the setting changes; poll for it if users ask.
+    fn open(&self, output: &Output, lost: Reopen) -> Result<(cpal::Stream, u32), String> {
+        let host = cpal::default_host();
+        let system = || host.default_output_device().ok_or("Aucune sortie audio");
+        let (device, status) = match output {
+            Output::Named(name) => {
+                let found = host
+                    .output_devices()
+                    .map_err(|e| e.to_string())?
+                    .find(|d| d.name().is_ok_and(|n| n == *name));
+                match found {
+                    Some(device) => (device, name.clone()),
+                    None if self.fallback => {
+                        let device = system()?;
+                        let status = format!(
+                            "« {name} » introuvable : son sur la sortie du système ({})",
+                            device.name().unwrap_or_default()
+                        );
+                        (device, status)
+                    }
+                    None => {
+                        return Err(format!(
+                            "« {name} » introuvable : branchez-la ou choisissez une autre sortie"
+                        ))
+                    }
                 }
             }
-            Err(e) => eprintln!("audio output unavailable: {e}"),
-        }
-        thread::sleep(Duration::from_secs(1));
+            _ => {
+                let device = system()?;
+                let status = format!("Sortie du système ({})", device.name().unwrap_or_default());
+                (device, status)
+            }
+        };
+        let opened = open_output(&self.mixer, &device, lost)?;
+        self.set_status(&status);
+        Ok(opened)
     }
 }
 
-fn open_output(mixer: &Arc<Mutex<Mixer>>, lost: Sender<()>) -> Result<(cpal::Stream, u32), String> {
-    let device = cpal::default_host()
-        .default_output_device()
-        .ok_or("aucune sortie audio")?;
+fn open_output(
+    mixer: &Arc<Mutex<Mixer>>,
+    device: &cpal::Device,
+    lost: Reopen,
+) -> Result<(cpal::Stream, u32), String> {
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let config: cpal::StreamConfig = supported.config();
     mixer.lock().expect("mixer").rate = f64::from(config.sample_rate.0);
     let stream = match supported.sample_format() {
-        cpal::SampleFormat::F32 => build::<f32>(&device, &config, mixer.clone(), lost),
-        cpal::SampleFormat::I16 => build::<i16>(&device, &config, mixer.clone(), lost),
-        cpal::SampleFormat::U16 => build::<u16>(&device, &config, mixer.clone(), lost),
-        cpal::SampleFormat::I32 => build::<i32>(&device, &config, mixer.clone(), lost),
+        cpal::SampleFormat::F32 => build::<f32>(device, &config, mixer.clone(), lost),
+        cpal::SampleFormat::I16 => build::<i16>(device, &config, mixer.clone(), lost),
+        cpal::SampleFormat::U16 => build::<u16>(device, &config, mixer.clone(), lost),
+        cpal::SampleFormat::I32 => build::<i32>(device, &config, mixer.clone(), lost),
         other => return Err(format!("format de sortie {other} non pris en charge")),
     }?;
     stream.play().map_err(|e| e.to_string())?;
@@ -447,7 +577,7 @@ fn build<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     mixer: Arc<Mutex<Mixer>>,
-    lost: Sender<()>,
+    lost: Reopen,
 ) -> Result<cpal::Stream, String> {
     let channels = usize::from(config.channels);
     let mut scratch: Vec<f32> = Vec::new();
@@ -463,7 +593,7 @@ fn build<T: SizedSample + FromSample<f32>>(
             },
             move |e| {
                 eprintln!("audio output error: {e}");
-                let _ = lost.send(());
+                let _ = lost.send(false);
             },
             None,
         )
@@ -583,5 +713,36 @@ mod tests {
         let mut out = vec![0.0; 10];
         mixer.render(&mut out, 1);
         assert_eq!(out[0], 0.5);
+    }
+
+    fn settled_status(engine: &Engine, until: impl Fn(&str) -> bool) -> String {
+        for _ in 0..50 {
+            let status = engine.status();
+            if until(&status) {
+                return status;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        engine.status()
+    }
+
+    /// Opens real devices: needs a sound card, so it is left out of CI.
+    #[test]
+    #[ignore = "needs an audio output"]
+    fn opens_the_chosen_output_and_handles_missing_ones() {
+        let name = output_names().into_iter().next().expect("an audio output");
+        let (engine, _) = Engine::start(Output::Named(name.clone()), true);
+        assert_eq!(settled_status(&engine, |s| s == name), name);
+
+        engine.set_output(Output::Named("No such device".into()));
+        let status = settled_status(&engine, |s| s.contains("introuvable"));
+        assert!(status.contains("sortie du système"), "{status}");
+
+        let (strict, _) = Engine::start(Output::Named("No such device".into()), false);
+        let status = settled_status(&strict, |s| s.contains("introuvable"));
+        assert!(status.contains("branchez-la"), "{status}");
+
+        strict.set_output(Output::Off);
+        assert_eq!(settled_status(&strict, |s| s == "Désactivée"), "Désactivée");
     }
 }

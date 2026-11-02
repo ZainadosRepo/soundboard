@@ -55,7 +55,7 @@ Jusqu'à la version 0.2.0 incluse, l'appli ne fait pas cette vérification : té
 | Réinitialiser la liste | Ctrl + R |
 | Réglages | Ctrl + , |
 | Réordonner les tuiles | Glisser une tuile sur une autre |
-| Options d'une tuile (boucle, solo, couleur…) | Clic droit sur la tuile |
+| Options d'une tuile (boucle, solo, couleur, pré-écoute…) | Clic droit sur la tuile |
 
 Sur Mac, Ctrl est remplacé par ⌘.
 
@@ -76,6 +76,13 @@ L'éditeur de forme d'onde (**Ouvrir l'éditeur complet…**) ajoute le zoom (Ct
 - **Grille** ou **liste** (boutons ▦ ☰). En liste, **Options** règle ce qui se passe à la fin d'un son : s'arrêter, sélectionner le suivant (Ctrl + Entrée le lance) ou enchaîner sur le suivant avec un fondu enchaîné. Les sons déjà joués sont cochés ; Ctrl + R remet la liste à zéro.
 - **Smart set** : montre les tuiles des autres sets qui suivent des règles (favori, couleur, titre, boucle…).
 - **Exporter / importer** (menu **⋯**) : un set et ses sons tiennent dans un seul fichier `.soundset`, à ouvrir sur un autre ordinateur (double-clic ou glisser sur la fenêtre).
+
+### Sorties audio et pré-écoute
+
+**Réglages › Audio** :
+
+- **Sortie** : où jouent les tuiles. Par défaut la sortie du système ; choisir un câble audio virtuel (VB-Cable, Voicemeeter, BlackHole) envoie les sons dans OBS ou Discord sans changer la sortie de tout l'ordinateur. Changer de sortie arrête les sons en cours. Si la sortie choisie est débranchée, les sons passent par la sortie du système.
+- **Pré-écoute** : une deuxième sortie, le casque par exemple, avec son propre volume, pour écouter un son sans qu'il parte en direct. Une fois activée, **clic droit › Pré-écouter** sur une tuile joue son son découpé (clic droit › Arrêter la pré-écoute pour couper), et **▶ Écouter** de l'éditeur passe aussi par elle. Si cette sortie est débranchée, la pré-écoute se tait au lieu de passer ailleurs.
 
 ### MIDI, OSC et liens
 

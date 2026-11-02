@@ -4,7 +4,7 @@
 
 use crate::audio::{Engine, StartRequest};
 use crate::decode;
-use crate::prefs::Prefs;
+use crate::prefs::{Prefs, PreviewPrefs};
 use serde::Serialize;
 use soundboard_core::gain::MasterVolume;
 use soundboard_core::library::SoundLibrary;
@@ -38,6 +38,8 @@ pub struct Board {
     store: Option<SetStore>,
     coordinator: PlaybackCoordinator,
     engine: Engine,
+    /// Pre-listening output; plays the preview while `prefs.preview` is on.
+    cue: Engine,
     pub prefs: Prefs,
     selected_tile: Option<Uuid>,
     /// Sound lengths by file id.
@@ -50,15 +52,20 @@ pub struct Board {
     midi_learning: Option<Uuid>,
     pub midi_sources: usize,
     midi_lights: MidiLights,
-    /// The editor's preview plays as its own voice, outside the coordinator: it never loops
-    /// or solos. Holds where in the file it started.
+    /// The preview (editor listening, tile pre-listening) plays as its own voice, outside the
+    /// coordinator: it never loops or solos. Holds where in the file it started.
     preview: Option<f64>,
     preview_voice: Uuid,
     effects: Vec<Effect>,
 }
 
 impl Board {
-    pub fn new(store: Result<SetStore, String>, prefs: Prefs, engine: Engine) -> Board {
+    pub fn new(
+        store: Result<SetStore, String>,
+        prefs: Prefs,
+        engine: Engine,
+        cue: Engine,
+    ) -> Board {
         let mut error = None;
         let (store, sets) = match store {
             Ok(store) => match store.load_all() {
@@ -83,11 +90,13 @@ impl Board {
         };
         let library = SoundLibrary::new(sets, prefs.selected_set);
         engine.set_master_gain(prefs.master.gain());
+        cue.set_master_gain(prefs.preview.volume);
         let mut board = Board {
             library,
             store,
             coordinator: PlaybackCoordinator::default(),
             engine,
+            cue,
             prefs,
             selected_tile: None,
             durations: HashMap::new(),
@@ -654,7 +663,7 @@ impl Board {
         settings.loops = false;
         settings.fade_in_time = 0.0;
         settings.fade_out_time = 0.0;
-        self.engine.start_voice(
+        self.preview_engine().start_voice(
             self.preview_voice,
             StartRequest {
                 path,
@@ -671,8 +680,60 @@ impl Board {
     }
 
     pub fn stop_preview(&mut self) {
+        // Both: the setting may have moved the preview since it started.
         self.engine.stop(self.preview_voice, None);
+        self.cue.stop(self.preview_voice, None);
         self.preview = None;
+    }
+
+    /// Pre-listening on, the preview goes to its own output and never reaches the live one.
+    fn preview_engine(&self) -> &Engine {
+        if self.prefs.preview.enabled {
+            &self.cue
+        } else {
+            &self.engine
+        }
+    }
+
+    /// Plays the tile's trimmed sound on the preview, or stops the preview if one plays.
+    pub fn cue(&mut self, id: Uuid) {
+        if self.preview.is_some() {
+            self.stop_preview();
+            return;
+        }
+        let Some(tile) = self.library.tile(id).cloned() else {
+            return;
+        };
+        let Some(duration) = self.durations.get(&tile.file_id).copied() else {
+            self.fail(format!(
+                "La durée de « {} » n’est pas encore connue.",
+                tile.title
+            ));
+            return;
+        };
+        self.preview(id, tile.player.trim_start, duration - tile.player.trim_end);
+    }
+
+    // ---------- audio outputs
+
+    pub fn set_output(&mut self, device: Option<String>) {
+        self.prefs.output_device = device;
+        self.engine.set_output(self.prefs.output());
+        self.save_prefs();
+    }
+
+    pub fn set_preview(&mut self, mut preview: PreviewPrefs) {
+        self.stop_preview();
+        preview.volume = preview.volume.clamp(0.0, 1.0);
+        self.cue.set_master_gain(preview.volume);
+        self.cue.set_output(preview.output());
+        self.prefs.preview = preview;
+        self.save_prefs();
+    }
+
+    /// Device in use or why none is, for the settings: (live, pre-listening).
+    pub fn output_status(&self) -> (String, String) {
+        (self.engine.status(), self.cue.status())
     }
 
     /// Moves the preview if one plays, otherwise the tile if it sounds, by `seconds`.
@@ -682,15 +743,20 @@ impl Board {
         } else {
             id
         };
-        if let Some((position, _)) = self.engine.playback(voice) {
-            self.engine.seek(voice, position + seconds);
+        let engine = if self.preview.is_some() {
+            self.preview_engine()
+        } else {
+            &self.engine
+        };
+        if let Some((position, _)) = engine.playback(voice) {
+            engine.seek(voice, position + seconds);
         }
     }
 
     /// Jumps the preview or the sounding tile to `time` seconds into the whole file.
     pub fn jump(&mut self, id: Uuid, time: f64) {
         if let Some(start) = self.preview {
-            self.engine.seek(self.preview_voice, time - start);
+            self.preview_engine().seek(self.preview_voice, time - start);
         } else if self.coordinator.state(id).is_some() {
             if let Some(tile) = self.library.tile(id) {
                 self.engine.seek(id, time - tile.player.trim_start);
@@ -702,7 +768,7 @@ impl Board {
     pub fn playhead(&self, id: Uuid) -> Option<f64> {
         if let Some(start) = self.preview {
             return self
-                .engine
+                .preview_engine()
                 .playback(self.preview_voice)
                 .map(|(p, _)| start + p);
         }
@@ -1086,6 +1152,7 @@ impl Board {
             midi_learning: self.midi_learning,
             midi_sources: self.midi_sources,
             previewing: self.preview.is_some(),
+            pre_listening: self.prefs.preview.enabled,
             error: self.error.clone(),
             can_delete_set: self.library.sets().len() > 1,
         }
@@ -1108,6 +1175,8 @@ pub struct Snapshot {
     midi_learning: Option<Uuid>,
     midi_sources: usize,
     previewing: bool,
+    /// Pre-listening output on: tiles offer « Pré-écouter ».
+    pre_listening: bool,
     error: Option<String>,
     can_delete_set: bool,
 }
@@ -1146,15 +1215,16 @@ struct TileView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::EngineEvent;
+    use crate::audio::{EngineEvent, Output};
     use std::sync::mpsc::Receiver;
     use std::time::Duration;
 
     fn board(dir: &Path, master_muted: bool) -> (Board, Receiver<EngineEvent>) {
-        let (engine, events) = Engine::start();
+        let (engine, events) = Engine::start(Output::System, true);
+        let (cue, _) = Engine::start(Output::Off, false);
         let (mut prefs, _) = Prefs::load(dir.join("settings.json"));
         prefs.master.muted = master_muted;
-        let board = Board::new(Ok(SetStore::new(dir.join("Sets"))), prefs, engine);
+        let board = Board::new(Ok(SetStore::new(dir.join("Sets"))), prefs, engine, cue);
         (board, events)
     }
 

@@ -1,6 +1,7 @@
 //! App preferences in `settings.json` of the app config folder: master volume, shown set,
-//! OSC, MIDI output and the global shortcut. Sets live in their own files.
+//! audio outputs, OSC, MIDI output and the global shortcut. Sets live in their own files.
 
+use crate::audio::Output;
 use serde::{Deserialize, Serialize};
 use soundboard_core::gain::MasterVolume;
 use soundboard_core::Uuid;
@@ -29,11 +30,45 @@ impl Default for OscPrefs {
     }
 }
 
+/// A second output to hear a sound before playing it live (headphones), off by default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PreviewPrefs {
+    pub enabled: bool,
+    /// `None` plays on the system's default output.
+    pub device: Option<String>,
+    /// 0…1, the pre-listening output's own master volume.
+    pub volume: f32,
+}
+
+impl Default for PreviewPrefs {
+    fn default() -> Self {
+        PreviewPrefs {
+            enabled: false,
+            device: None,
+            volume: 1.0,
+        }
+    }
+}
+
+impl PreviewPrefs {
+    pub fn output(&self) -> Output {
+        match (self.enabled, &self.device) {
+            (false, _) => Output::Off,
+            (true, None) => Output::System,
+            (true, Some(name)) => Output::Named(name.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Prefs {
     pub master: MasterVolume,
     pub selected_set: Option<Uuid>,
+    /// Device that plays the tiles (a virtual cable for a stream…); `None` is the system's.
+    pub output_device: Option<String>,
+    pub preview: PreviewPrefs,
     pub osc: OscPrefs,
     /// Name of the MIDI output that gets pad lights; `None` sends nothing.
     pub midi_output: Option<String>,
@@ -50,6 +85,8 @@ impl Default for Prefs {
         Prefs {
             master: MasterVolume::default(),
             selected_set: None,
+            output_device: None,
+            preview: PreviewPrefs::default(),
             osc: OscPrefs::default(),
             midi_output: None,
             midi_velocity: 127,
@@ -60,6 +97,12 @@ impl Default for Prefs {
 }
 
 impl Prefs {
+    pub fn output(&self) -> Output {
+        self.output_device
+            .clone()
+            .map_or(Output::System, Output::Named)
+    }
+
     /// A missing file gives the defaults; an unreadable one is moved to `settings.json.bad`
     /// and reported, so a damaged file is never silently overwritten.
     pub fn load(path: PathBuf) -> (Prefs, Option<String>) {
@@ -117,5 +160,31 @@ mod tests {
         assert_eq!(prefs.midi_velocity, 127);
         assert!(path.with_extension("json.bad").exists());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn outputs_follow_the_settings() {
+        let mut prefs = Prefs::default();
+        assert_eq!(prefs.output(), Output::System);
+        assert_eq!(prefs.preview.output(), Output::Off);
+        prefs.output_device = Some("CABLE Input".into());
+        prefs.preview.device = Some("Casque".into());
+        assert_eq!(prefs.output(), Output::Named("CABLE Input".into()));
+        assert_eq!(
+            prefs.preview.output(),
+            Output::Off,
+            "a device alone does not switch it on"
+        );
+        prefs.preview.enabled = true;
+        assert_eq!(prefs.preview.output(), Output::Named("Casque".into()));
+        prefs.preview.device = None;
+        assert_eq!(prefs.preview.output(), Output::System);
+    }
+
+    #[test]
+    fn settings_from_older_versions_keep_their_defaults() {
+        let prefs: Prefs = serde_json::from_str(r#"{"midiVelocity": 64}"#).unwrap();
+        assert_eq!(prefs.output(), Output::System);
+        assert_eq!(prefs.preview, PreviewPrefs::default());
     }
 }
