@@ -4,6 +4,7 @@ mod decode;
 mod midi_io;
 mod osc_service;
 mod prefs;
+mod update;
 
 use audio::{Engine, EngineEvent};
 use board::{Board, Effect};
@@ -469,6 +470,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -578,6 +580,7 @@ pub fn run() {
             if !opened.is_empty() {
                 app.with(|b| b.open(&opened));
             }
+            update::check_in_background(handle);
             Ok(())
         })
         .on_window_event(|window, event| {

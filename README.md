@@ -27,7 +27,9 @@ Dernière version : **[Releases › Latest](https://github.com/ZainadosRepo/soun
 
 ### Mettre à jour
 
-Télécharger la nouvelle version et l'installer par-dessus l'ancienne. Les sets, les sons et les réglages sont conservés.
+Au lancement, l'appli regarde sur GitHub si une version plus récente est publiée et propose de l'installer : **Installer** la télécharge, vérifie sa signature et redémarre l'appli ; **Plus tard** la reproposera au prochain lancement. Hors ligne, rien ne s'affiche. Les sets, les sons et les réglages sont conservés.
+
+Jusqu'à la version 0.2.0 incluse, l'appli ne fait pas cette vérification : télécharger la nouvelle version et l'installer par-dessus l'ancienne.
 
 ## Utilisation
 
@@ -129,3 +131,5 @@ node --test "tests/ui/*.test.js"
 1. Monter la version dans `src-tauri/tauri.conf.json` et `src-tauri/Cargo.toml`.
 2. Pousser un tag `v<version>` : `.github/workflows/release.yml` construit l'installeur Windows et l'image macOS dans une release en brouillon.
 3. Relire la release sur GitHub et la publier.
+
+Les mises à jour sont signées : la release a besoin des secrets `TAURI_SIGNING_PRIVATE_KEY` et `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` du dépôt, dont la clé publique est `plugins.updater.pubkey` dans `tauri.conf.json`. Les applis installées ne voient la version qu'une fois la release publiée (le brouillon est ignoré). Perdre la clé privée oblige à réinstaller à la main la version qui embarque la nouvelle clé publique.

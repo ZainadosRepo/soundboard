@@ -1,6 +1,7 @@
 name: Release
 
-# Builds the Windows installer (.exe) and the macOS disk image (.dmg) into a draft release.
+# Builds the Windows installer (.exe) and the macOS disk image (.dmg) into a draft release,
+# plus the signed update files (.sig, .app.tar.gz, latest.json) the installed apps check at launch.
 on:
   push:
     tags: ["v*"]
@@ -19,7 +20,8 @@ jobs:
             args: --bundles nsis
             targets: ""
           - os: macos-latest
-            args: --target universal-apple-darwin --bundles dmg
+            # `app` too: the updater installs the .app.tar.gz, which a dmg-only build drops.
+            args: --target universal-apple-darwin --bundles app,dmg
             targets: aarch64-apple-darwin,x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
@@ -35,6 +37,8 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: tauri
           args: ${{ matrix.args }}
