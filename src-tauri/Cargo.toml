@@ -1,6 +1,6 @@
 [package]
 name = "soundboard"
-version = "0.2.0"
+version = "0.3.0"
 description = "Soundboard: sets of sound tiles to play live, with fades, MIDI, OSC and links"
 authors = ["ZainadosRepo"]
 edition = "2021"
